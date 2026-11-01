@@ -1,4 +1,5 @@
 import { registerCustomerRoutes } from './customers/routes.ts';
+import { registerJiraIssueRoutes } from './jira-issues/routes.ts';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
@@ -49,6 +50,7 @@ export async function buildApp(
   registerAuthRoutes(app);
   registerMovieRoutes(app);
   registerCustomerRoutes(app);
+  registerJiraIssueRoutes(app);
 
   app.get(
     '/health',

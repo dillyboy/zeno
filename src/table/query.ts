@@ -152,7 +152,20 @@ function compileDate(
 function compileNumber(op: unknown, v: unknown, field: string, p: string): Predicate {
   const path = p + '.value';
   let condition;
-  if (op === 'between') {
+  if (op === 'eq') {
+    const entries = Array.isArray(v) ? list(v, path) : [v];
+    const values = entries.map((entry, index) => {
+      const entryPath = Array.isArray(v) ? `${path}[${index}]` : path;
+      if (
+        typeof entry === 'string' &&
+        /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(entry.trim())
+      ) {
+        return number(Number(entry), entryPath);
+      }
+      return number(entry, entryPath);
+    });
+    condition = { $in: [...new Set(values)] };
+  } else if (op === 'between') {
     const values = list(v, path).map((entry) => number(entry, path));
     const [start, through] = values;
     if (values.length !== 2 || start === undefined || through === undefined || start > through) {
@@ -219,9 +232,9 @@ function parseFilter(raw: unknown, index: number, fields: TableFields, seen: Set
   const config =
     typeof f.field === 'string' && Object.hasOwn(fields, f.field) ? fields[f.field] : undefined;
   if (!config || config.filterable === false) fail(p + '.field', 'Unknown filterable field.');
-  const fieldName = text(f.field, p + '.field');
-  if (seen.has(fieldName)) fail(p + '.field', 'Duplicate filter field.');
-  seen.add(fieldName);
+  const field = text(f.field, p + '.field');
+  if (seen.has(field)) fail(p + '.field', 'Duplicate filter field.');
+  seen.add(field);
   return { p, f, c: config };
 }
 

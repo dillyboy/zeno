@@ -200,58 +200,53 @@ const request = {
 The following ES module example uses the native `mongodb` driver and Day.js for timezone conversion (`npm install mongodb dayjs` in the backend project). It assumes the request has passed the validation rules in section 7. The field registry is illustrative and must be defined per endpoint.
 
 ```js
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
-import customParseFormat from "dayjs/plugin/customParseFormat.js";
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc.js';
+import timezone from 'dayjs/plugin/timezone.js';
+import customParseFormat from 'dayjs/plugin/customParseFormat.js';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.extend(customParseFormat);
 
 const fields = new Map([
-  ["name", { path: "name", type: "string" }],
+  ['name', { path: 'name', type: 'string' }],
   [
-    "status",
+    'status',
     {
-      path: "status",
-      type: "options",
-      options: ["active", "pending", "inactive"],
+      path: 'status',
+      type: 'options',
+      options: ['active', 'pending', 'inactive'],
     },
   ],
-  ["amount", { path: "amount", type: "number" }],
-  ["createdAt", { path: "createdAt", type: "date" }],
+  ['amount', { path: 'amount', type: 'number' }],
+  ['createdAt', { path: 'createdAt', type: 'date' }],
 ]);
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const absoluteEnd = "(?![\\s\\S])";
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const absoluteEnd = '(?![\\s\\S])';
 const regex = (field, pattern) => ({
-  [field]: { $regex: pattern, $options: "i" },
+  [field]: { $regex: pattern, $options: 'i' },
 });
-const exactMatch = (field, value) =>
-  regex(field, "^" + escapeRegex(value) + absoluteEnd);
+const exactMatch = (field, value) => regex(field, '^' + escapeRegex(value) + absoluteEnd);
 
 function dayStart(value, timeZone) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error("Expected YYYY-MM-DD");
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('Expected YYYY-MM-DD');
   }
-  if (!dayjs.utc(value, "YYYY-MM-DD", true).isValid()) {
-    throw new Error("Invalid calendar date");
+  if (!dayjs.utc(value, 'YYYY-MM-DD', true).isValid()) {
+    throw new Error('Invalid calendar date');
   }
-  return dayjs.tz(value, "YYYY-MM-DD", timeZone).startOf("day");
+  return dayjs.tz(value, 'YYYY-MM-DD', timeZone).startOf('day');
 }
 
 function dateRange(field, start, end, timeZone) {
   const from = dayStart(start, timeZone);
   const through = dayStart(end, timeZone);
-  if (from.valueOf() > through.valueOf())
-    throw new Error("Reversed date range");
+  if (from.valueOf() > through.valueOf()) throw new Error('Reversed date range');
   // Advance the calendar label, then parse midnight in the target zone again.
   // This recalculates its offset if daylight saving changes overnight.
-  const nextDay = dayjs
-    .utc(end, "YYYY-MM-DD", true)
-    .add(1, "day")
-    .format("YYYY-MM-DD");
+  const nextDay = dayjs.utc(end, 'YYYY-MM-DD', true).add(1, 'day').format('YYYY-MM-DD');
   const until = dayStart(nextDay, timeZone);
   return {
     [field]: { $gte: from.toDate(), $lt: until.toDate() },
@@ -260,69 +255,69 @@ function dateRange(field, start, end, timeZone) {
 
 function compileFilter(filter, timeZone) {
   const config = fields.get(filter.field);
-  if (!config) throw new Error("Unknown field");
+  if (!config) throw new Error('Unknown field');
   const field = config.path;
   const { operator, value } = filter;
-  if (operator === "blank") return { [field]: null };
+  if (operator === 'blank') return { [field]: null };
 
-  if (config.type === "date") {
-    if (operator === "in") {
+  if (config.type === 'date') {
+    if (operator === 'in') {
       return { $or: value.map((day) => dateRange(field, day, day, timeZone)) };
     }
-    if (operator === "between-dates" || operator === "quick-ranges") {
+    if (operator === 'between-dates' || operator === 'quick-ranges') {
       return dateRange(field, value[0], value[1], timeZone);
     }
-    throw new Error("Unsupported date operator");
+    throw new Error('Unsupported date operator');
   }
 
-  if (config.type === "number") {
+  if (config.type === 'number') {
     const operators = {
-      equal: "$eq",
-      "not-equal": "$ne",
-      "greater-than": "$gt",
-      "greater-than-or-equal": "$gte",
-      "less-than": "$lt",
-      "less-than-or-equal": "$lte",
+      equal: '$eq',
+      'not-equal': '$ne',
+      'greater-than': '$gt',
+      'greater-than-or-equal': '$gte',
+      'less-than': '$lt',
+      'less-than-or-equal': '$lte',
     };
-    if (operator !== "between" && !Object.hasOwn(operators, operator)) {
-      throw new Error("Unsupported numeric operator");
+    if (operator !== 'between' && !Object.hasOwn(operators, operator)) {
+      throw new Error('Unsupported numeric operator');
     }
     const condition =
-      operator === "between"
+      operator === 'between'
         ? { $gte: value[0], $lte: value[1] }
         : { [operators[operator]]: value };
-    return { $and: [{ [field]: { $type: "number" } }, { [field]: condition }] };
+    return { $and: [{ [field]: { $type: 'number' } }, { [field]: condition }] };
   }
 
-  const nonblank = { [field]: { $type: "string", $nin: [null, ""] } };
+  const nonblank = { [field]: { $type: 'string', $nin: [null, ''] } };
   let predicate;
-  if ((config.type === "options" && operator === "eq") || operator === "in") {
+  if ((config.type === 'options' && operator === 'eq') || operator === 'in') {
     const values = Array.isArray(value) ? value : [value];
     predicate = { $or: values.map((entry) => exactMatch(field, entry)) };
   } else {
     const escaped = escapeRegex(value);
     switch (operator) {
-      case "eq":
+      case 'eq':
         predicate = exactMatch(field, value);
         break;
-      case "neq":
+      case 'neq':
         predicate = {
           [field]: {
-            $not: { $regex: "^" + escaped + absoluteEnd, $options: "i" },
+            $not: { $regex: '^' + escaped + absoluteEnd, $options: 'i' },
           },
         };
         break;
-      case "contains":
+      case 'contains':
         predicate = regex(field, escaped);
         break;
-      case "startswith":
-        predicate = regex(field, "^" + escaped);
+      case 'startswith':
+        predicate = regex(field, '^' + escaped);
         break;
-      case "endswith":
+      case 'endswith':
         predicate = regex(field, escaped + absoluteEnd);
         break;
       default:
-        throw new Error("Unsupported text operator");
+        throw new Error('Unsupported text operator');
     }
   }
   return { $and: [nonblank, predicate] };
@@ -348,17 +343,10 @@ const totalItems = await collection.countDocuments(match);
 const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 const currentPage = Math.min(page, totalPages);
 const skip = (currentPage - 1) * pageSize;
-const order = sort?.direction === "descending" ? -1 : 1;
-const mongoSort = sort
-  ? { [fields.get(sort.column).path]: order, _id: 1 }
-  : { _id: 1 };
+const order = sort?.direction === 'descending' ? -1 : 1;
+const mongoSort = sort ? { [fields.get(sort.column).path]: order, _id: 1 } : { _id: 1 };
 
-const rows = await collection
-  .find(match)
-  .sort(mongoSort)
-  .skip(skip)
-  .limit(pageSize)
-  .toArray();
+const rows = await collection.find(match).sort(mongoSort).skip(skip).limit(pageSize).toArray();
 ```
 
 This is the order of operations: **filter → count → clamp page → sort → skip → limit**. Use `countDocuments(match)`, not `estimatedDocumentCount()`, for filtered totals. The native driver documents [cursor pagination](https://www.mongodb.com/docs/drivers/node/current/crud/query/specify-documents-to-return/) and [counting](https://www.mongodb.com/docs/drivers/node/current/crud/query/count/).
@@ -377,7 +365,7 @@ if (sort) {
     {
       $set: {
         __tableBlank: {
-          $cond: [{ $eq: [{ $ifNull: ["$" + field, null] }, null] }, 1, 0],
+          $cond: [{ $eq: [{ $ifNull: ['$' + field, null] }, null] }, 1, 0],
         },
       },
     },
@@ -395,10 +383,10 @@ const rows = await collection
       ...sortStages,
       { $skip: skip },
       { $limit: pageSize },
-      { $unset: "__tableBlank" },
+      { $unset: '__tableBlank' },
     ],
     {
-      collation: { locale: "en", strength: 1 },
+      collation: { locale: 'en', strength: 1 },
       maxTimeMS: 10000,
     },
   )
@@ -443,9 +431,7 @@ Return HTTP 400 for request errors, with a stable machine code and field path, f
   "error": {
     "code": "INVALID_TABLE_QUERY",
     "message": "Range start must not exceed range end.",
-    "details": [
-      { "path": "filters[0].value", "message": "Expected start <= end." }
-    ]
+    "details": [{ "path": "filters[0].value", "message": "Expected start <= end." }]
   }
 }
 ```

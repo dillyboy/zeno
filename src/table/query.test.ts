@@ -100,3 +100,35 @@ it.each([
     ),
   ).toThrow();
 });
+
+it.each([[['5']], [['5', '8']], [[5, '8', '5']]])(
+  'matches numeric option IDs as stored numbers: %j',
+  (values) => {
+    const query = compileTableQuery(
+      { filters: [{ field: 'amount', operator: 'eq', value: values }] },
+      customerFields,
+    );
+    expect(query.match).toEqual({
+      $and: [
+        {
+          $and: [
+            { amount: { $type: 'number' } },
+            { amount: { $in: [...new Set(values.map(Number))] } },
+          ],
+        },
+      ],
+    });
+  },
+);
+
+it.each(['', ' ', 'abc', 'Infinity', 'NaN', '0x5', '1e999', null, true, {}, []])(
+  'rejects invalid numeric option IDs: %j',
+  (value) => {
+    expect(() =>
+      compileTableQuery(
+        { filters: [{ field: 'amount', operator: 'eq', value: [value] }] },
+        customerFields,
+      ),
+    ).toThrow();
+  },
+);
