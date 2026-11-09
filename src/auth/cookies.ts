@@ -1,6 +1,8 @@
+import { accessTokenLifetimeSeconds, refreshTokenLifetimeSeconds } from '../config/durations.ts';
 import type { FastifyReply } from 'fastify';
 
 export const accessCookieName = 'access_token';
+export const refreshCookieName = 'refresh_token';
 
 function cookieOptions() {
   return {
@@ -12,9 +14,25 @@ function cookieOptions() {
 }
 
 export function setAccessCookie(reply: FastifyReply, token: string) {
-  reply.setCookie(accessCookieName, token, { ...cookieOptions(), maxAge: 3600 });
+  reply.setCookie(accessCookieName, token, {
+    ...cookieOptions(),
+    maxAge: accessTokenLifetimeSeconds,
+  });
 }
 
 export function clearAccessCookie(reply: FastifyReply) {
   reply.clearCookie(accessCookieName, cookieOptions());
+}
+
+export function setRefreshCookie(reply: FastifyReply, token: string) {
+  reply.setCookie(refreshCookieName, token, {
+    ...cookieOptions(),
+    maxAge: refreshTokenLifetimeSeconds,
+  });
+}
+
+export function clearAuthCookies(reply: FastifyReply) {
+  clearAccessCookie(reply);
+  reply.clearCookie(refreshCookieName, cookieOptions());
+  reply.header('Cache-Control', 'no-store');
 }

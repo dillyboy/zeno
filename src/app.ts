@@ -1,3 +1,5 @@
+import { registerCsrfProtection } from './security/csrf.ts';
+import { accessTokenLifetimeSeconds } from './config/durations.ts';
 import { registerCustomerRoutes } from './customers/routes.ts';
 import { registerJiraIssueRoutes } from './jira-issues/routes.ts';
 import Fastify, { type FastifyServerOptions } from 'fastify';
@@ -17,10 +19,11 @@ export async function buildApp(
     throw new Error('JWT_SECRET must contain at least 32 bytes. Set it in .env.');
   }
   const app = Fastify(options);
+  registerCsrfProtection(app);
   await app.register(cookie);
   await app.register(jwt, {
     secret: jwtSecret,
-    sign: { algorithm: 'HS256', expiresIn: '1h' },
+    sign: { algorithm: 'HS256', expiresIn: accessTokenLifetimeSeconds },
     verify: { algorithms: ['HS256'] },
     cookie: { cookieName: accessCookieName, signed: false },
   });

@@ -1,3 +1,4 @@
+import { injectAuth } from '../auth/testRequest.ts';
 import { afterEach, expect, it, vi } from 'vite-plus/test';
 import { hashSync } from 'bcryptjs';
 import { Types } from 'mongoose';
@@ -40,7 +41,7 @@ it('sets a login cookie, serves movies, and clears the cookie on logout', async 
     vi.mocked(findTopMovies).mockResolvedValue([
       { _id: id, __v: 0, title: 'Movie', year: '2001–2002', imdb: { rating: 9 } },
     ]);
-    const login = await app.inject({
+    const login = await injectAuth(app, {
       method: 'POST',
       url: '/auth/login',
       payload: { email: 'test@example.com', password: 'test-password' },
@@ -51,7 +52,11 @@ it('sets a login cookie, serves movies, and clears the cookie on logout', async 
     expect(setCookie).toContain('SameSite=Strict');
     expect(setCookie).toContain('Path=/');
     const cookie = setCookie.split(';')[0]!;
-    const response = await app.inject({ method: 'GET', url: '/movies/top', headers: { cookie } });
+    const response = await injectAuth(app, {
+      method: 'GET',
+      url: '/movies/top',
+      headers: { cookie },
+    });
     expect(response.statusCode).toBe(200);
     expect(response.json().movies[0].title).toBe('Movie');
     expect(response.json().movies[0].year).toBe('2001–2002');
@@ -60,11 +65,16 @@ it('sets a login cookie, serves movies, and clears the cookie on logout', async 
       'test@example.com',
       login.json().token,
     );
-    const logout = await app.inject({ method: 'POST', url: '/auth/logout', headers: { cookie } });
+    const logout = await injectAuth(app, {
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie },
+    });
     expect(logout.statusCode).toBe(200);
     expect(String(logout.headers['set-cookie'])).toContain('Expires=Thu, 01 Jan 1970');
     expect(
-      (await app.inject({ method: 'GET', url: '/movies/top', headers: { cookie } })).statusCode,
+      (await injectAuth(app, { method: 'GET', url: '/movies/top', headers: { cookie } }))
+        .statusCode,
     ).toBe(401);
     expect(findTopMovies).toHaveBeenCalledTimes(1);
   } finally {
@@ -83,7 +93,7 @@ it('rejects missing, expired, invalid, refresh, and header-only tokens', async (
     for (const token of ['', 'invalid', pair.refreshToken, expired]) {
       expect(
         (
-          await app.inject({
+          await injectAuth(app, {
             method: 'GET',
             url: '/movies/top',
             headers: { cookie: `access_token=${token}` },
@@ -93,7 +103,7 @@ it('rejects missing, expired, invalid, refresh, and header-only tokens', async (
     }
     expect(
       (
-        await app.inject({
+        await injectAuth(app, {
           method: 'GET',
           url: '/movies/top',
           headers: { authorization: `Bearer ${pair.token}` },
@@ -112,7 +122,7 @@ it('refresh replaces the browser access cookie', async () => {
   try {
     vi.mocked(rotateSession).mockResolvedValue(true);
     const pair = issueTokens(app, 'user-id', 'test@example.com');
-    const response = await app.inject({
+    const response = await injectAuth(app, {
       method: 'POST',
       url: '/auth/refresh',
       payload: { refreshToken: pair.refreshToken },

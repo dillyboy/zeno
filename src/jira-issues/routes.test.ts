@@ -98,8 +98,16 @@ it('requires authentication, clamps empty pages, preserves stored fields, and sh
       $and: [{ story_points: { $type: 'number' } }, { story_points: { $in: [5] } }],
     });
     expect((await search({ page: '1' })).statusCode).toBe(400);
+    const email = await search({
+      filters: [{ field: 'email', operator: 'contains', value: 'example.com' }],
+    });
+    expect(email.statusCode).toBe(200);
+    expect(aggregate.mock.lastCall![0][0].$match.$and[0].$and[1]).toEqual({
+      email: { $regex: 'example\\.com', $options: 'i' },
+    });
+    expect(aggregate.mock.lastCall![0][0].$match).toEqual(countDocuments.mock.lastCall![0]);
     expect(
-      (await search({ filters: [{ field: 'email', operator: 'contains', value: 'a' }] }))
+      (await search({ filters: [{ field: 'unknown', operator: 'contains', value: 'a' }] }))
         .statusCode,
     ).toBe(400);
     for (const field of ['created', 'updated']) {

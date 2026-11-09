@@ -63,11 +63,12 @@ Use `POST /auth/login` under **Auth** in Swagger UI:
 
 The endpoint reads `sample_mflix.users` using the existing connection and verifies
 the bcrypt hash. Supply the original password, not the stored hash. A successful
-response contains `token`, `refreshToken`, and `user` (ID, name, email). Invalid credentials return 401.
+response contains `token`, `accessExpiresAt` (Unix milliseconds), and `user` (ID, name, email). Invalid credentials return 401. Refresh tokens are never included in JSON.
 Login also sets `access_token` as an HttpOnly cookie. The browser stores it and
-sends it automatically to this server. It uses `SameSite=Strict`, a one-hour
+sends it automatically to this server. It uses `SameSite=Strict`, a 15-minute
 lifetime, and `Secure` when `NODE_ENV=production` (HTTPS required in production).
-Each login issues a unique JWT valid for one hour and upserts the user's record in
+Each login issues a unique access JWT valid for 15 minutes and a refresh token valid
+for 24 hours, and upserts the user's record in
 `sample_mflix.sessions` with `user_id` (the user's email), `jwt`, and `active: true`.
 The existing unique `user_id` index allows one session per user. Logging in again
 replaces the previous token and reactivates the session, including after logout.
@@ -75,17 +76,20 @@ The implementation lives in `src/auth/` and does not modify the sample users.
 
 ## Refresh tokens
 
-Log in again after upgrading to obtain a `refreshToken`. Use `POST /auth/refresh`
-under **Auth** in Swagger with this body (no Bearer access token is required):
+Login sets both `access_token` and `refresh_token` as HttpOnly, SameSite=Strict,
+Path=/ cookies. Both use Secure in production. Access lasts 15 minutes and refresh
+lasts 24 hours. The browser sends them automatically; do not copy refresh tokens
+into localStorage or sessionStorage.
 
-```json
-{ "refreshToken": "paste-the-refreshToken-from-login-here" }
-```
+Call `POST /auth/refresh` with cookies included (no body is needed; `{}` also
+works). It rotates both cookies and returns `token` plus `accessExpiresAt` in Unix
+milliseconds. The refresh credential is never returned in JSON. The optional
+legacy `refreshToken` request field remains accepted for existing clients, but
+cookie credentials take precedence.
 
-The response contains a new `token` (one-hour access JWT) and `refreshToken`
-(valid for seven days). Save both new values: refreshing replaces both stored
-credentials, and the old refresh token cannot be used again. Refresh also replaces
-the access cookie automatically; continue using the latest `refreshToken` in the body.
+Active clients should refresh around one minute before `accessExpiresAt`, with
+one request at a time across tabs. Pause refresh while idle or logging out.
+A 401 requires sign-in; transient failures may retry while the user is active.
 
 Sessions store `refreshTokenHash` (SHA-256) and `refreshExpiresAt`, never the raw
 refresh token. Refresh requires an active session and its current, unexpired
@@ -96,9 +100,11 @@ refresh credential. Invalid, expired, reused, or logged-out refresh tokens retur
 After logging in in Swagger, execute `POST /auth/logout` without a request body.
 The browser sends the access cookie automatically. Logout clears that cookie.
 
-It identifies the user from the verified access token and updates
-only its matching active session with `active: false`. Missing, expired, invalid,
-or already logged-out tokens return 401. Other users' sessions remain active.
+It revokes the current session using the verified refresh cookie, even after
+access expiry, and clears both cookies. Without a refresh cookie it accepts the
+current access cookie or Bearer token. Invalid credentials return 401 and clear
+both cookies; transient server failures preserve them for retry. Other users'
+sessions remain active.
 
 Logout also accepts `Authorization: Bearer <token>` for existing HTTP clients.
 
@@ -212,3 +218,92 @@ have a 10-second database timeout; computed blank sorting, regex searches, exact
 counts, and deep page offsets can be expensive for large collections. Review
 indexes against actual workloads before scaling. Upload/write endpoints are not
 part of this read-only sample.
+
+### Server-side session expiration
+
+Sessions expire after 15 minutes without a successful authenticated API request
+or token refresh, and after 8 hours from login regardless of activity. These
+limits are enforced atomically in MongoDB for both API authentication and refresh.
+Refresh updates activity but preserves the absolute deadline; expired sessions
+cannot be revived by refreshing. Browser timers are only a user experience aid.
+Duration settings live in `.env` and are read by `src/config/durations.ts`. Existing session records without
+these timestamps are rejected, so users must sign in again after deployment.
+Expired records may remain marked active in storage, but cannot authorize requests.
+
+### Duration configuration
+
+Copy the duration settings in `.env.example` to `.env`. Restart the backend after
+changing them; deployment environment variables take precedence over `.env`.
+Missing or invalid values fall back to the defaults below. Values must be positive
+integers no greater than 2147483647.
+
+| Variable                         | Default  | Unit         |
+| -------------------------------- | -------- | ------------ |
+| `SESSION_IDLE_TIMEOUT_MS`        | 900000   | milliseconds |
+| `SESSION_ABSOLUTE_LIFETIME_MS`   | 28800000 | milliseconds |
+| `ACCESS_TOKEN_LIFETIME_SECONDS`  | 900      | seconds      |
+| `REFRESH_TOKEN_LIFETIME_SECONDS` | 86400    | seconds      |
+| `DATABASE_SELECTION_TIMEOUT_MS`  | 10000    | milliseconds |
+| `DATABASE_QUERY_TIMEOUT_MS`      | 10000    | milliseconds |
+
+Cookie lifetimes use the matching token settings. Absolute session deadlines are
+stored at login, so changed absolute lifetimes apply to new logins. Idle timeout
+changes apply to existing sessions after restart. Keep the frontend warning plus
+countdown aligned with the backend idle limit, and its refresh lead time shorter
+than the access-token lifetime.
+
+### CSRF and browser origins
+
+Set `CSRF_ALLOWED_ORIGINS` in `.env` to comma-separated exact browser origins
+(scheme, hostname and port, without paths or trailing slashes). It is required in
+production; wildcard and malformed entries are rejected at startup. For example:
+
+```dotenv
+CSRF_ALLOWED_ORIGINS=https://tasks.example.com
+```
+
+Development defaults include localhost and 127.0.0.1 on ports 5173, 3000 and 6006.
+Remove unused origins in deployed environments. Configuration is read when the
+app starts, so restart after changes. CORS remains disabled; this allowlist does
+not enable cross-origin JavaScript access. Use the frontend's same-origin proxy.
+
+All non-safe methods require a trusted Origin, or a trusted Referer when Origin
+is absent, and `Content-Type: application/json`. Missing, null, malformed, and
+untrusted sources receive 403 before authentication or cookie changes. Unsupported
+content types receive 415. Login, refresh and logout clients must send a JSON body;
+use `{}` for refresh/logout when no fields are needed. Command-line clients must
+also send the trusted Origin and JSON content type. Reverse proxies must preserve
+browser Origin/Referer rather than replacing them or trusting a rewritten Host.
+
+Only explicitly marked read-only POST searches (`config.csrfReadOnly`) may omit
+both source headers, supporting the frontend server loader. A supplied untrusted
+source is still rejected. Do not use this exemption for mutations, authentication,
+or credential rotation; future POST/PUT/PATCH/DELETE routes are protected by default.
+SameSite=Strict, HttpOnly and production Secure cookies remain additional defenses.
+
+### Login brute-force protection
+
+`POST /auth/login` permits 20 requests per client IP and 5 validated requests per
+normalized email address per 15-minute fixed window. All admitted attempts count,
+including successful logins, so parallel requests and successful logins cannot
+reset the budget. Account keys are trimmed, lowercased, and SHA-256 hashed.
+Unknown and existing accounts receive identical throttling responses.
+
+Excess requests return `429`, `Cache-Control: no-store`, and `Retry-After` in
+seconds before database lookup or bcrypt comparison. IP limiting also runs before
+body parsing/validation. Rejected attempts do not extend the window. Account
+throttling temporarily also blocks legitimate sign-ins to an attacked account;
+existing sessions, refresh, logout, and health checks remain available.
+
+Counters are scoped to one app process, reset on restart, and hold at most 10,000
+IP and 10,000 account buckets. At capacity, new keys are rejected until expired
+entries can be reclaimed; active entries are never evicted to bypass limits.
+Before deploying multiple processes/replicas, replace these counters with a shared
+atomic store such as Redis and add edge request/concurrency limits. These limits
+reduce password guessing; they do not replace MFA or prevent all distributed attacks.
+
+Fastify currently leaves `trustProxy` disabled, so spoofed `X-Forwarded-For` headers
+do not change the IP bucket. Behind Vite or another reverse proxy, requests share
+the proxy IP budget. Configure only known proxy addresses in Fastify and ensure
+the proxy overwrites forwarding headers before relying on end-user IP limits.
+Never enable unrestricted `trustProxy` on a directly reachable backend.

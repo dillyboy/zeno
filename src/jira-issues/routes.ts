@@ -28,6 +28,7 @@ export const jiraIssueFields = {
     ],
   },
   assignee: { path: 'assignee', type: 'string' },
+  email: { path: 'email', type: 'string' },
   story_points: { path: 'story_points', type: 'number' },
   status: {
     path: 'status',

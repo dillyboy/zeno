@@ -1,3 +1,4 @@
+import { databaseQueryTimeoutMs } from '../config/durations.ts';
 import type { FastifyInstance } from 'fastify';
 import { authenticateCookie } from '../auth/authenticate.ts';
 import { compileTableQuery, TableQueryError, type TableFields } from './query.ts';
@@ -15,6 +16,7 @@ export function registerTableSearch(app: FastifyInstance, resource: TableResourc
   app.post(
     resource.url,
     {
+      config: { csrfReadOnly: true },
       bodyLimit: 64 * 1024,
       preHandler: resource.requireAuth === false ? [] : authenticateCookie,
       schema: {
@@ -35,7 +37,9 @@ export function registerTableSearch(app: FastifyInstance, resource: TableResourc
       try {
         const query = compileTableQuery(request.body, resource.fields);
         const collection = app.db.collection(resource.collection);
-        const totalItems = await collection.countDocuments(query.match, { maxTimeMS: 10000 });
+        const totalItems = await collection.countDocuments(query.match, {
+          maxTimeMS: databaseQueryTimeoutMs,
+        });
         const totalPages = Math.max(1, Math.ceil(totalItems / query.pageSize));
         const currentPage = Math.min(query.page, totalPages);
         const rows = await collection
@@ -58,7 +62,7 @@ export function registerTableSearch(app: FastifyInstance, resource: TableResourc
               { $limit: query.pageSize },
               ...(query.sort ? [{ $replaceWith: '$row' }] : []),
             ],
-            { collation: { locale: 'en', strength: 1 }, maxTimeMS: 10000 },
+            { collation: { locale: 'en', strength: 1 }, maxTimeMS: databaseQueryTimeoutMs },
           )
           .toArray();
         return {

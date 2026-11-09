@@ -1,11 +1,13 @@
+import { injectAuth } from './testRequest.ts';
 import { afterEach, expect, it, vi } from 'vite-plus/test';
 import { buildApp } from '../app.ts';
-import { rotateSession, deactivateSession } from './session.ts';
+import { rotateSession, deactivateSession, deactivateRefreshSession } from './session.ts';
 import { hashRefreshToken, issueTokens } from './tokens.ts';
 
 vi.mock('./session.ts', () => ({
   createSession: vi.fn(),
   deactivateSession: vi.fn(),
+  deactivateRefreshSession: vi.fn(),
   rotateSession: vi.fn(),
 }));
 vi.stubEnv('JWT_SECRET', 'test-only-secret-at-least-32-bytes-long');
@@ -19,26 +21,33 @@ it('rotates both tokens without requiring a valid access token and rejects refre
     const request = {
       method: 'POST' as const,
       url: '/auth/refresh',
-      payload: { refreshToken: original.refreshToken },
+      headers: { cookie: `refresh_token=${original.refreshToken}` },
     };
-    const response = await app.inject(request);
+    const response = await injectAuth(app, request);
     expect(response.statusCode).toBe(200);
     expect(response.headers['cache-control']).toBe('no-store');
     const body = response.json();
     expect(body.token).not.toBe(original.token);
-    expect(body.refreshToken).not.toBe(original.refreshToken);
+    expect(body).not.toHaveProperty('refreshToken');
+    const cookies = response.cookies;
+    const refreshCookie = cookies.find((cookie) => cookie.name === 'refresh_token')!;
+    expect(refreshCookie.value).not.toBe(original.refreshToken);
+    expect(refreshCookie.httpOnly).toBe(true);
+    expect(refreshCookie.sameSite).toBe('Strict');
+    expect(cookies.find((cookie) => cookie.name === 'access_token')?.value).toBe(body.token);
+    expect(body.accessExpiresAt).toBeGreaterThan(Date.now());
     expect(app.jwt.verify(body.token)).toMatchObject({ token_use: 'access' });
-    expect(app.jwt.verify(body.refreshToken)).toMatchObject({ token_use: 'refresh' });
+    expect(app.jwt.verify(refreshCookie.value)).toMatchObject({ token_use: 'refresh' });
     expect(rotateSession).toHaveBeenCalledWith(
       undefined,
       'test@example.com',
       hashRefreshToken(original.refreshToken),
       expect.objectContaining({
         token: body.token,
-        refreshTokenHash: hashRefreshToken(body.refreshToken),
+        refreshTokenHash: hashRefreshToken(refreshCookie.value),
       }),
     );
-    expect((await app.inject(request)).statusCode).toBe(401);
+    expect((await injectAuth(app, request)).statusCode).toBe(401);
   } finally {
     await app.close();
   }
@@ -54,12 +63,12 @@ it('rejects invalid, expired, and access tokens before updating the session', as
     );
     for (const refreshToken of ['invalid', expired, pair.token]) {
       expect(
-        (await app.inject({ method: 'POST', url: '/auth/refresh', payload: { refreshToken } }))
+        (await injectAuth(app, { method: 'POST', url: '/auth/refresh', payload: { refreshToken } }))
           .statusCode,
       ).toBe(401);
     }
     expect(rotateSession).not.toHaveBeenCalled();
-    const logout = await app.inject({
+    const logout = await injectAuth(app, {
       method: 'POST',
       url: '/auth/logout',
       headers: { authorization: `Bearer ${pair.refreshToken}` },
@@ -76,7 +85,7 @@ it('rejects inactive or replaced sessions without returning tokens', async () =>
   try {
     vi.mocked(rotateSession).mockResolvedValue(false);
     const pair = issueTokens(app, 'user-id', 'test@example.com');
-    const response = await app.inject({
+    const response = await injectAuth(app, {
       method: 'POST',
       url: '/auth/refresh',
       payload: { refreshToken: pair.refreshToken },
@@ -92,10 +101,56 @@ it('requires a refresh token', async () => {
   const app = await buildApp();
   try {
     expect(
-      (await app.inject({ method: 'POST', url: '/auth/refresh', payload: {} })).statusCode,
-    ).toBe(400);
+      (await injectAuth(app, { method: 'POST', url: '/auth/refresh', payload: {} })).statusCode,
+    ).toBe(401);
     expect(rotateSession).not.toHaveBeenCalled();
   } finally {
     await app.close();
+  }
+});
+
+it('logs out using the refresh cookie after the access cookie expires and clears both cookies', async () => {
+  const app = await buildApp();
+  try {
+    const pair = issueTokens(app, 'user-id', 'test@example.com');
+    vi.mocked(deactivateRefreshSession).mockResolvedValue(true);
+    const response = await injectAuth(app, {
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: `refresh_token=${pair.refreshToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(deactivateRefreshSession).toHaveBeenCalledWith(
+      undefined,
+      'test@example.com',
+      hashRefreshToken(pair.refreshToken),
+    );
+    expect(response.cookies.map((cookie) => [cookie.name, cookie.value])).toEqual([
+      ['access_token', ''],
+      ['refresh_token', ''],
+    ]);
+  } finally {
+    await app.close();
+  }
+});
+
+it('sets Secure cookies in production', async () => {
+  vi.stubEnv('CSRF_ALLOWED_ORIGINS', 'http://localhost:5173');
+  vi.stubEnv('NODE_ENV', 'production');
+  const app = await buildApp();
+  try {
+    vi.mocked(rotateSession).mockResolvedValue(true);
+    const pair = issueTokens(app, 'user-id', 'test@example.com');
+    const response = await injectAuth(app, {
+      method: 'POST',
+      url: '/auth/refresh',
+      headers: { cookie: `refresh_token=${pair.refreshToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.cookies).toHaveLength(2);
+    expect(response.cookies.every((cookie) => cookie.secure && cookie.httpOnly)).toBe(true);
+  } finally {
+    await app.close();
+    vi.stubEnv('NODE_ENV', 'test');
   }
 });

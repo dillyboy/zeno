@@ -1,3 +1,4 @@
+import { refreshTokenLifetimeSeconds } from '../config/durations.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
@@ -16,7 +17,7 @@ export function issueTokens(app: FastifyInstance, id: string, email: string) {
   const token = app.jwt.sign({ sub: id, email, token_use: 'access', jti: randomUUID() });
   const refreshToken = app.jwt.sign(
     { sub: id, email, token_use: 'refresh', jti: randomUUID() },
-    { expiresIn: '7d' },
+    { expiresIn: refreshTokenLifetimeSeconds },
   );
   const { exp } = app.jwt.decode<TokenClaims>(refreshToken)!;
   return {

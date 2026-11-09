@@ -1,3 +1,5 @@
+import { sessionIdleTimeoutMs, sessionAbsoluteLifetimeMs } from '../config/durations.ts';
+export { sessionIdleTimeoutMs, sessionAbsoluteLifetimeMs } from '../config/durations.ts';
 import { Schema, type Connection, type Model } from 'mongoose';
 
 interface Session {
@@ -6,6 +8,8 @@ interface Session {
   active: boolean;
   refreshTokenHash?: string;
   refreshExpiresAt?: Date;
+  lastActivityAt: Date;
+  absoluteExpiresAt: Date;
 }
 
 const sessionSchema = new Schema<Session>(
@@ -15,6 +19,8 @@ const sessionSchema = new Schema<Session>(
     active: { type: Boolean, required: true, default: true },
     refreshTokenHash: { type: String, select: false },
     refreshExpiresAt: Date,
+    lastActivityAt: { type: Date, required: true },
+    absoluteExpiresAt: { type: Date, required: true },
   },
   { collection: 'sessions', autoCreate: false, autoIndex: false },
 );
@@ -27,8 +33,25 @@ function sessions(connection: Connection) {
   );
 }
 
+// Refreshes count as activity, but can never extend the absolute deadline.
+
+function liveSession(now: Date) {
+  return {
+    active: true,
+    lastActivityAt: { $gt: new Date(now.getTime() - sessionIdleTimeoutMs) },
+    absoluteExpiresAt: { $gt: now },
+  };
+}
+
 export async function hasActiveSession(connection: Connection, email: string, token: string) {
-  return Boolean(await sessions(connection).exists({ user_id: email, jwt: token, active: true }));
+  const now = new Date();
+  const result = await sessions(connection)
+    .updateOne(
+      { user_id: email, jwt: token, ...liveSession(now) },
+      { $max: { lastActivityAt: now } },
+    )
+    .exec();
+  return result.matchedCount === 1;
 }
 
 interface SessionTokens {
@@ -46,10 +69,18 @@ function tokenFields(tokens: SessionTokens) {
 }
 
 export async function createSession(connection: Connection, email: string, tokens: SessionTokens) {
+  const now = new Date();
   await sessions(connection)
     .updateOne(
       { user_id: email },
-      { $set: { ...tokenFields(tokens), active: true } },
+      {
+        $set: {
+          ...tokenFields(tokens),
+          active: true,
+          lastActivityAt: now,
+          absoluteExpiresAt: new Date(now.getTime() + sessionAbsoluteLifetimeMs),
+        },
+      },
       { upsert: true, runValidators: true },
     )
     .exec();
@@ -61,15 +92,16 @@ export async function rotateSession(
   previousHash: string,
   tokens: SessionTokens,
 ) {
+  const now = new Date();
   const result = await sessions(connection)
     .updateOne(
       {
         user_id: email,
-        active: true,
+        ...liveSession(now),
         refreshTokenHash: previousHash,
-        refreshExpiresAt: { $gt: new Date() },
+        refreshExpiresAt: { $gt: now },
       },
-      { $set: tokenFields(tokens) },
+      { $set: tokenFields(tokens), $max: { lastActivityAt: now } },
       { runValidators: true },
     )
     .exec();
@@ -84,6 +116,21 @@ export async function deactivateSession(connection: Connection, email: string, t
         $set: { active: false },
         $unset: { refreshTokenHash: '', refreshExpiresAt: '' },
       },
+    )
+    .exec();
+  return result.modifiedCount === 1;
+}
+
+/** Revoke the current refresh credential even after its access token expires. */
+export async function deactivateRefreshSession(
+  connection: Connection,
+  email: string,
+  refreshTokenHash: string,
+) {
+  const result = await sessions(connection)
+    .updateOne(
+      { user_id: email, refreshTokenHash, active: true },
+      { $set: { active: false }, $unset: { refreshTokenHash: '', refreshExpiresAt: '' } },
     )
     .exec();
   return result.modifiedCount === 1;

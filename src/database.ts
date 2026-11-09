@@ -1,3 +1,4 @@
+import { databaseSelectionTimeoutMs } from './config/durations.ts';
 import mongoose, { type Connection } from 'mongoose';
 import type { FastifyInstance } from 'fastify';
 
@@ -29,7 +30,7 @@ export function registerDatabase(app: FastifyInstance, uri: string | undefined) 
   app.addHook('onReady', async () => {
     try {
       await connection.openUri(uri, {
-        serverSelectionTimeoutMS: 10000,
+        serverSelectionTimeoutMS: databaseSelectionTimeoutMs,
         bufferCommands: false,
       });
       app.log.info('MongoDB connected');
